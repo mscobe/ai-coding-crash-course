@@ -1,3 +1,4 @@
+import { Link } from "react-router";
 import type { CourseSummary } from "~/services/analyticsService";
 import { CourseStatus } from "~/db/schema";
 import { Card } from "~/components/ui/card";
@@ -90,7 +91,14 @@ export function CourseSummaryTable({
   );
 }
 
-/** The course title. Ticket #7 turns this into a link to the course's analytics. */
+/** The course title, linking to that course's analytics. */
 function CourseName({ course }: { course: CourseSummary }) {
-  return <span className="font-medium">{course.title}</span>;
+  return (
+    <Link
+      to={`/instructor/${course.courseId}/analytics`}
+      className="font-medium hover:underline"
+    >
+      {course.title}
+    </Link>
+  );
 }
