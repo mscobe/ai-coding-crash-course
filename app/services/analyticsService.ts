@@ -1,6 +1,7 @@
 import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { db } from "~/db";
+import { calculateProgress } from "~/services/progressService";
 import {
   CourseStatus,
   courseRatings,
@@ -275,4 +276,155 @@ export function getInstructorOverview(
     averageRating: rating.average,
     ratingCount: rating.count,
   };
+}
+
+// ─── Per-course summary ───
+
+/** Range-scoped revenue (cents) per course id. */
+function revenueByCourse(instructorId: number, window: Window) {
+  const rows = db
+    .select({
+      courseId: purchases.courseId,
+      total: sql<number>`sum(${purchases.amountPaid})`,
+    })
+    .from(purchases)
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .where(
+      and(
+        instructorCourseFilter(instructorId),
+        withinWindow(purchases.createdAt, window)
+      )
+    )
+    .groupBy(purchases.courseId)
+    .all();
+  return new Map(rows.map((r) => [r.courseId, r.total]));
+}
+
+/** Range-scoped enrollment count per course id. */
+function enrollmentsByCourse(instructorId: number, window: Window) {
+  const rows = db
+    .select({
+      courseId: enrollments.courseId,
+      count: sql<number>`count(*)`,
+    })
+    .from(enrollments)
+    .innerJoin(courses, eq(enrollments.courseId, courses.id))
+    .where(
+      and(
+        instructorCourseFilter(instructorId),
+        withinWindow(enrollments.enrolledAt, window)
+      )
+    )
+    .groupBy(enrollments.courseId)
+    .all();
+  return new Map(rows.map((r) => [r.courseId, r.count]));
+}
+
+/** All-time rating average and count per course id. */
+function ratingsByCourse(instructorId: number) {
+  const rows = db
+    .select({
+      courseId: courseRatings.courseId,
+      average: sql<number>`avg(${courseRatings.rating})`,
+      count: sql<number>`count(*)`,
+    })
+    .from(courseRatings)
+    .innerJoin(courses, eq(courseRatings.courseId, courses.id))
+    .where(instructorCourseFilter(instructorId))
+    .groupBy(courseRatings.courseId)
+    .all();
+  return new Map(rows.map((r) => [r.courseId, r]));
+}
+
+/**
+ * All-time completion rate and average progress (both 0–1) per course id.
+ * Progress reuses the student-facing calculation: unweighted, quizzes excluded.
+ */
+function outcomesByCourse(instructorId: number) {
+  const rows = db
+    .select({
+      userId: enrollments.userId,
+      courseId: enrollments.courseId,
+      completedAt: enrollments.completedAt,
+    })
+    .from(enrollments)
+    .innerJoin(courses, eq(enrollments.courseId, courses.id))
+    .where(instructorCourseFilter(instructorId))
+    .all();
+
+  const totals = new Map<
+    number,
+    { enrolled: number; completed: number; progress: number }
+  >();
+  for (const row of rows) {
+    const t = totals.get(row.courseId) ?? {
+      enrolled: 0,
+      completed: 0,
+      progress: 0,
+    };
+    t.enrolled++;
+    if (row.completedAt !== null) t.completed++;
+    t.progress += calculateProgress(row.userId, row.courseId, false, false);
+    totals.set(row.courseId, t);
+  }
+
+  return new Map(
+    [...totals].map(([courseId, t]) => [
+      courseId,
+      {
+        completionRate: t.completed / t.enrolled,
+        averageProgress: t.progress / t.enrolled / 100,
+      },
+    ])
+  );
+}
+
+export type CourseSummary = {
+  courseId: number;
+  title: string;
+  status: CourseStatus;
+  /** Gross amount paid in the selected range, in cents. */
+  revenue: number;
+  /** New enrollments in the selected range. */
+  enrollments: number;
+  /** 0–1, all time. 0 when there are no enrollments. */
+  completionRate: number;
+  /** Mean per-student progress, 0–1, all time. 0 when there are no enrollments. */
+  averageProgress: number;
+  /** 1–5, unrounded; null when unrated. All time. */
+  averageRating: number | null;
+  ratingCount: number;
+};
+
+/** One row per non-draft course of the instructor, ordered by title. */
+export function getCourseSummaries(
+  instructorId: number,
+  range: AnalyticsRange,
+  now: Date = new Date()
+): CourseSummary[] {
+  const { current } = getRangeWindows(range, now);
+  const revenue = revenueByCourse(instructorId, current);
+  const enrolled = enrollmentsByCourse(instructorId, current);
+  const outcomes = outcomesByCourse(instructorId);
+  const ratings = ratingsByCourse(instructorId);
+
+  return db
+    .select({
+      courseId: courses.id,
+      title: courses.title,
+      status: courses.status,
+    })
+    .from(courses)
+    .where(instructorCourseFilter(instructorId))
+    .orderBy(courses.title)
+    .all()
+    .map((course) => ({
+      ...course,
+      revenue: revenue.get(course.courseId) ?? 0,
+      enrollments: enrolled.get(course.courseId) ?? 0,
+      completionRate: outcomes.get(course.courseId)?.completionRate ?? 0,
+      averageProgress: outcomes.get(course.courseId)?.averageProgress ?? 0,
+      averageRating: ratings.get(course.courseId)?.average ?? null,
+      ratingCount: ratings.get(course.courseId)?.count ?? 0,
+    }));
 }

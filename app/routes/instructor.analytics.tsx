@@ -3,25 +3,17 @@ import type { Route } from "./+types/instructor.analytics";
 import { requireInstructor } from "~/lib/access.server";
 import { EnrollmentsChart } from "~/components/enrollments-chart";
 import {
+  getCourseSummaries,
   getEnrollmentsOverTime,
   getInstructorOverview,
   parseAnalyticsRange,
   type AnalyticsRange,
-  type PeriodComparison,
 } from "~/services/analyticsService";
-import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
+import { OverviewTiles } from "~/components/analytics-tiles";
+import { CourseSummaryTable } from "~/components/course-summary-table";
 import { cn } from "~/lib/utils";
-import {
-  AlertTriangle,
-  ArrowDownRight,
-  ArrowUpRight,
-  BarChart3,
-  CheckCircle2,
-  DollarSign,
-  Star,
-  Users,
-} from "lucide-react";
+import { AlertTriangle, BarChart3 } from "lucide-react";
 
 // ─── Instructor Analytics Overview ───
 // Headline numbers across the signed-in instructor's own (non-draft) courses.
@@ -33,11 +25,6 @@ const RANGE_OPTIONS: { value: AnalyticsRange; label: string }[] = [
   { value: "12m", label: "Last 12 months" },
   { value: "all", label: "All time" },
 ];
-
-const usd = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-});
 
 export function meta() {
   return [{ title: "Analytics — Cadence" }];
@@ -53,13 +40,14 @@ export async function loader({ request }: Route.LoaderArgs) {
     range,
     overview: getInstructorOverview(userId, range),
     enrollmentsOverTime: getEnrollmentsOverTime(userId, range),
+    courses: getCourseSummaries(userId, range),
   };
 }
 
 export default function InstructorAnalytics({
   loaderData,
 }: Route.ComponentProps) {
-  const { range, overview, enrollmentsOverTime } = loaderData;
+  const { range, overview, enrollmentsOverTime, courses } = loaderData;
   const isEmpty =
     overview.revenue.current === 0 && overview.newEnrollments.current === 0;
 
@@ -87,42 +75,7 @@ export default function InstructorAnalytics({
         <RangeSelector selected={range} />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatTile
-          label="Revenue"
-          icon={<DollarSign className="size-4" />}
-          value={usd.format(overview.revenue.current / 100)}
-          change={<Change comparison={overview.revenue} />}
-        />
-        <StatTile
-          label="New enrollments"
-          icon={<Users className="size-4" />}
-          value={overview.newEnrollments.current.toLocaleString("en-US")}
-          change={<Change comparison={overview.newEnrollments} />}
-        />
-        <StatTile
-          label="Completion rate"
-          icon={<CheckCircle2 className="size-4" />}
-          value={`${Math.round(overview.completionRate * 100)}%`}
-          change={<span>All time</span>}
-        />
-        <StatTile
-          label="Average rating"
-          icon={<Star className="size-4" />}
-          value={
-            overview.averageRating === null
-              ? "—"
-              : overview.averageRating.toFixed(1)
-          }
-          change={
-            <span>
-              {overview.ratingCount === 0
-                ? "No ratings yet"
-                : `${overview.ratingCount} rating${overview.ratingCount === 1 ? "" : "s"}`}
-            </span>
-          }
-        />
-      </div>
+      <OverviewTiles overview={overview} />
 
       <div className="mt-6">
         <EnrollmentsChart series={enrollmentsOverTime} />
@@ -143,6 +96,13 @@ export default function InstructorAnalytics({
           </Link>
         </div>
       )}
+
+      <CourseSummaryTable
+        courses={courses}
+        rangeLabel={
+          RANGE_OPTIONS.find((option) => option.value === range)!.label
+        }
+      />
     </div>
   );
 }
@@ -171,65 +131,6 @@ function RangeSelector({ selected }: { selected: AnalyticsRange }) {
         </Link>
       ))}
     </div>
-  );
-}
-
-function StatTile({
-  label,
-  icon,
-  value,
-  change,
-}: {
-  label: string;
-  icon: React.ReactNode;
-  value: string;
-  change: React.ReactNode;
-}) {
-  return (
-    <Card>
-      <CardContent className="space-y-2 p-5">
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>{label}</span>
-          {icon}
-        </div>
-        <div className="text-3xl font-bold tabular-nums">{value}</div>
-        <div className="text-xs text-muted-foreground">{change}</div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function Change({ comparison }: { comparison: PeriodComparison }) {
-  const { current, previous } = comparison;
-  // "All time" has nothing to compare against.
-  if (previous === null) return <span>All time</span>;
-
-  if (previous === 0) {
-    return (
-      <span>
-        {current === 0 ? "No change" : "Up from none"} vs previous period
-      </span>
-    );
-  }
-
-  const percent = Math.round(((current - previous) / previous) * 100);
-  if (percent === 0) return <span>No change vs previous period</span>;
-
-  const up = percent > 0;
-  const Arrow = up ? ArrowUpRight : ArrowDownRight;
-  return (
-    <span className="inline-flex items-center gap-1">
-      <span
-        className={cn(
-          "inline-flex items-center font-medium",
-          up ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"
-        )}
-      >
-        <Arrow className="size-3.5" />
-        {Math.abs(percent)}%
-      </span>
-      vs previous period
-    </span>
   );
 }
 

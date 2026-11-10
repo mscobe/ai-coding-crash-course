@@ -12,7 +12,11 @@ vi.mock("~/db", () => ({
 }));
 
 // Import after mock so the module picks up our test db
-import { getInstructorOverview, parseAnalyticsRange } from "./analyticsService";
+import {
+  getCourseSummaries,
+  getInstructorOverview,
+  parseAnalyticsRange,
+} from "./analyticsService";
 
 // A fixed "now" so window boundaries are exact.
 const NOW = new Date("2026-06-30T12:00:00.000Z");
@@ -288,6 +292,155 @@ describe("analyticsService", () => {
         revenue: { current: 0, previous: 0 },
         newEnrollments: { current: 0, previous: 0 },
         completionRate: 0,
+        averageRating: null,
+        ratingCount: 0,
+      });
+    });
+  });
+
+  describe("getCourseSummaries", () => {
+    it("lists the instructor's published and archived courses with their status, excluding drafts and other instructors' courses", () => {
+      const other = testDb
+        .insert(schema.users)
+        .values({
+          name: "Other Instructor",
+          email: "other@example.com",
+          role: schema.UserRole.Instructor,
+        })
+        .returning()
+        .get();
+      createCourse(other.id);
+      createCourse(base.instructor.id, schema.CourseStatus.Draft);
+      const archived = createCourse(
+        base.instructor.id,
+        schema.CourseStatus.Archived
+      );
+
+      const rows = getCourseSummaries(base.instructor.id, "30d", NOW);
+
+      expect(
+        rows.map((r) => ({ courseId: r.courseId, status: r.status }))
+      ).toEqual([
+        { courseId: archived.id, status: schema.CourseStatus.Archived },
+        { courseId: base.course.id, status: schema.CourseStatus.Published },
+      ]);
+    });
+    it("sums each course's revenue and enrollments within the selected range only", () => {
+      const second = createCourse(base.instructor.id);
+      createPurchase(base.course.id, 1000, daysBeforeNow(2));
+      createPurchase(base.course.id, 500, daysBeforeNow(29));
+      createPurchase(base.course.id, 9000, daysBeforeNow(31));
+      createPurchase(second.id, 700, daysBeforeNow(10));
+      createEnrollment(base.course.id, daysBeforeNow(1));
+      createEnrollment(base.course.id, daysBeforeNow(45));
+      createEnrollment(second.id, daysBeforeNow(3));
+      createEnrollment(second.id, daysBeforeNow(4));
+
+      const rows = getCourseSummaries(base.instructor.id, "30d", NOW);
+      const byId = (id: number) => rows.find((r) => r.courseId === id)!;
+
+      expect(byId(base.course.id)).toMatchObject({
+        revenue: 1500,
+        enrollments: 1,
+      });
+      expect(byId(second.id)).toMatchObject({ revenue: 700, enrollments: 2 });
+
+      const allTime = getCourseSummaries(base.instructor.id, "all", NOW);
+      expect(allTime.find((r) => r.courseId === base.course.id)).toMatchObject({
+        revenue: 10500,
+        enrollments: 2,
+      });
+    });
+    it("reports all-time completion, average progress, and average rating, ignoring the range", () => {
+      const lessonIds = [1, 2].flatMap((modulePosition) => {
+        const mod = testDb
+          .insert(schema.modules)
+          .values({
+            courseId: base.course.id,
+            title: `Module ${modulePosition}`,
+            position: modulePosition,
+          })
+          .returning()
+          .get();
+        return [1, 2].map(
+          (position) =>
+            testDb
+              .insert(schema.lessons)
+              .values({ moduleId: mod.id, title: "Lesson", position })
+              .returning()
+              .get().id
+        );
+      });
+      const progress = (
+        userId: number,
+        lessonId: number,
+        status: schema.LessonProgressStatus
+      ) =>
+        testDb
+          .insert(schema.lessonProgress)
+          .values({ userId, lessonId, status })
+          .run();
+
+      // Finished all four lessons, long before the selected range.
+      const finished = createEnrollment(
+        base.course.id,
+        daysBeforeNow(200),
+        daysBeforeNow(150)
+      );
+      for (const id of lessonIds) {
+        progress(finished.userId, id, schema.LessonProgressStatus.Completed);
+      }
+      // Completed two of four lessons; a third in progress doesn't count.
+      const halfway = createEnrollment(base.course.id, daysBeforeNow(100));
+      progress(
+        halfway.userId,
+        lessonIds[0],
+        schema.LessonProgressStatus.Completed
+      );
+      progress(
+        halfway.userId,
+        lessonIds[1],
+        schema.LessonProgressStatus.Completed
+      );
+      progress(
+        halfway.userId,
+        lessonIds[2],
+        schema.LessonProgressStatus.InProgress
+      );
+
+      for (const rating of [5, 4]) {
+        testDb
+          .insert(schema.courseRatings)
+          .values({
+            userId: createStudent().id,
+            courseId: base.course.id,
+            rating,
+          })
+          .run();
+      }
+
+      const [row] = getCourseSummaries(base.instructor.id, "30d", NOW);
+
+      expect(row).toMatchObject({
+        enrollments: 0,
+        completionRate: 0.5,
+        averageProgress: 0.75,
+        averageRating: 4.5,
+        ratingCount: 2,
+      });
+    });
+
+    it("shows zeros for a course with no enrollments, purchases, or ratings", () => {
+      const [row] = getCourseSummaries(base.instructor.id, "all", NOW);
+
+      expect(row).toEqual({
+        courseId: base.course.id,
+        title: base.course.title,
+        status: schema.CourseStatus.Published,
+        revenue: 0,
+        enrollments: 0,
+        completionRate: 0,
+        averageProgress: 0,
         averageRating: null,
         ratingCount: 0,
       });
