@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Form, useLocation } from "react-router";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
-import type { UserRole } from "~/db/schema";
+import { UserRole } from "~/db/schema";
 import { ChevronDown, ChevronUp, Globe } from "lucide-react";
 
 interface DevUser {
@@ -112,7 +112,12 @@ export function DevUI({ users, currentUser, devCountry, countryTierInfo, countri
                 <Form
                   key={user.id}
                   method="post"
-                  action={`/api/switch-user?redirectTo=${encodeURIComponent(location.pathname + location.search)}`}
+                  action={
+                    // Instructors land on their home page; everyone else stays put.
+                    user.role === UserRole.Instructor
+                      ? "/api/switch-user"
+                      : `/api/switch-user?redirectTo=${encodeURIComponent(location.pathname + location.search)}`
+                  }
                 >
                   <input type="hidden" name="userId" value={user.id} />
                   <button
