@@ -2,7 +2,8 @@ import { Form, Link, useActionData, useNavigation, useSearchParams } from "react
 import { redirect, data } from "react-router";
 import { z } from "zod";
 import type { Route } from "./+types/login";
-import { getUserByEmail } from "~/services/userService";
+import { getUserByEmail, getUserById } from "~/services/userService";
+import { UserRole } from "~/db/schema";
 import { setCurrentUserId, getCurrentUserId } from "~/lib/session";
 import { parseFormData } from "~/lib/validation";
 import { Button } from "~/components/ui/button";
@@ -25,12 +26,18 @@ export function meta() {
   ];
 }
 
+// An explicit redirect target wins; otherwise instructors land on "My Courses".
+function resolveDestination(url: URL, role: UserRole | undefined) {
+  const redirectTo = url.searchParams.get("redirectTo");
+  if (redirectTo && redirectTo.startsWith("/")) return redirectTo;
+  return role === UserRole.Instructor ? "/instructor" : "/courses";
+}
+
 export async function loader({ request, url }: Route.LoaderArgs) {
   const currentUserId = await getCurrentUserId(request);
   if (currentUserId) {
-    const redirectTo = url.searchParams.get("redirectTo");
-    const destination = redirectTo && redirectTo.startsWith("/") ? redirectTo : "/courses";
-    throw redirect(destination);
+    const user = getUserById(currentUserId);
+    throw redirect(resolveDestination(url, user?.role));
   }
   return {};
 }
@@ -59,8 +66,7 @@ export async function action({ request, url }: Route.ActionArgs) {
     );
   }
 
-  const redirectTo = url.searchParams.get("redirectTo");
-  const destination = redirectTo && redirectTo.startsWith("/") ? redirectTo : "/courses";
+  const destination = resolveDestination(url, user.role);
 
   const cookie = await setCurrentUserId(request, user.id);
   throw redirect(destination, {
