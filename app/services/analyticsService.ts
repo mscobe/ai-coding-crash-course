@@ -100,6 +100,95 @@ function comparePeriods(
   };
 }
 
+// ─── Enrollments over time ───
+// New enrollments bucketed by UTC day (30d), ISO week starting Monday (90d),
+// or month (12m, all). Buckets span every period the range's window touches,
+// so the first one may be partial and the series sums to the overview's
+// new-enrollments figure. Empty periods are zero rather than skipped.
+
+export type TimeGranularity = "day" | "week" | "month";
+
+/** `start` is the bucket's first UTC day as `YYYY-MM-DD`. */
+export type EnrollmentBucket = { start: string; count: number };
+
+export type EnrollmentsOverTime = {
+  granularity: TimeGranularity;
+  buckets: EnrollmentBucket[];
+};
+
+const RANGE_GRANULARITY: Record<AnalyticsRange, TimeGranularity> = {
+  "30d": "day",
+  "90d": "week",
+  "12m": "month",
+  all: "month",
+};
+
+/** Start (UTC midnight) of the bucket containing `date`. */
+function bucketStart(date: Date, granularity: TimeGranularity): Date {
+  const day = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+  );
+  if (granularity === "day") return day;
+  if (granularity === "week") {
+    const daysSinceMonday = (day.getUTCDay() + 6) % 7;
+    return new Date(day.getTime() - daysSinceMonday * DAY_MS);
+  }
+  return new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), 1));
+}
+
+function nextBucket(start: Date, granularity: TimeGranularity): Date {
+  if (granularity === "day") return new Date(start.getTime() + DAY_MS);
+  if (granularity === "week") return new Date(start.getTime() + 7 * DAY_MS);
+  return new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1));
+}
+
+const toDateKey = (date: Date) => date.toISOString().slice(0, 10);
+
+export function getEnrollmentsOverTime(
+  instructorId: number,
+  range: AnalyticsRange,
+  now: Date = new Date()
+): EnrollmentsOverTime {
+  const granularity = RANGE_GRANULARITY[range];
+  const { current } = getRangeWindows(range, now);
+
+  const rows = db
+    .select({ enrolledAt: enrollments.enrolledAt })
+    .from(enrollments)
+    .innerJoin(courses, eq(enrollments.courseId, courses.id))
+    .where(
+      and(
+        instructorCourseFilter(instructorId),
+        withinWindow(enrollments.enrolledAt, current)
+      )
+    )
+    .all();
+
+  const counts = new Map<string, number>();
+  let earliest: Date | null = null;
+  for (const { enrolledAt } of rows) {
+    const date = new Date(enrolledAt);
+    if (earliest === null || date < earliest) earliest = date;
+    const key = toDateKey(bucketStart(date, granularity));
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+
+  // "All time" starts at the first enrollment; with none there is no series.
+  const firstDay = current.start === null ? earliest : new Date(current.start);
+  if (firstDay === null) return { granularity, buckets: [] };
+
+  const buckets: EnrollmentBucket[] = [];
+  for (
+    let start = bucketStart(firstDay, granularity);
+    start <= now;
+    start = nextBucket(start, granularity)
+  ) {
+    const key = toDateKey(start);
+    buckets.push({ start: key, count: counts.get(key) ?? 0 });
+  }
+  return { granularity, buckets };
+}
+
 // ─── Instructor overview ───
 
 function sumRevenue(instructorId: number, window: Window): number {
