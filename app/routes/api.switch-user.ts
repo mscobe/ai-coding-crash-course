@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { Route } from "./+types/api.switch-user";
 import { setCurrentUserId } from "~/lib/session";
 import { parseFormData } from "~/lib/validation";
+import { getUserById } from "~/services/userService";
+import { UserRole } from "~/db/schema";
 
 const switchUserSchema = z.object({
   userId: z.coerce.number().int().positive("Invalid user ID"),
@@ -18,7 +20,10 @@ export async function action({ request, url }: Route.ActionArgs) {
 
   const cookie = await setCurrentUserId(request, parsed.data.userId);
 
-  return redirect(url.searchParams.get("redirectTo") ?? "/", {
+  const user = getUserById(parsed.data.userId);
+  const fallback = user?.role === UserRole.Instructor ? "/instructor" : "/";
+
+  return redirect(url.searchParams.get("redirectTo") ?? fallback, {
     headers: { "Set-Cookie": cookie },
   });
 }
