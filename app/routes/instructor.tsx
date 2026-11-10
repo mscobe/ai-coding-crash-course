@@ -9,6 +9,8 @@ import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
 import { AlertTriangle, BookOpen, GraduationCap, Plus, Users } from "lucide-react";
 import { CourseImage } from "~/components/course-image";
+import { OverviewTiles } from "~/components/analytics-tiles";
+import { getInstructorOverview } from "~/services/analyticsService";
 import { data, isRouteErrorResponse } from "react-router";
 import { CourseStatus, UserRole } from "~/db/schema";
 
@@ -56,7 +58,10 @@ export async function loader({ request }: Route.LoaderArgs) {
     };
   });
 
-  return { courses: coursesWithStats };
+  return {
+    courses: coursesWithStats,
+    overview: getInstructorOverview(currentUserId, "30d"),
+  };
 }
 
 function statusBadge(status: string) {
@@ -121,7 +126,7 @@ export function HydrateFallback() {
 export default function InstructorDashboard({
   loaderData,
 }: Route.ComponentProps) {
-  const { courses } = loaderData;
+  const { courses, overview } = loaderData;
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -148,6 +153,21 @@ export default function InstructorDashboard({
           </Button>
         </Link>
       </div>
+
+      <section aria-labelledby="kpi-heading" className="mb-10">
+        <div className="mb-3 flex items-baseline justify-between gap-4">
+          <h2 id="kpi-heading" className="text-sm font-medium text-muted-foreground">
+            Last 30 days
+          </h2>
+          <Link
+            to="/instructor/analytics"
+            className="text-sm font-medium text-primary hover:underline"
+          >
+            View analytics →
+          </Link>
+        </div>
+        <OverviewTiles overview={overview} />
+      </section>
 
       {courses.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
