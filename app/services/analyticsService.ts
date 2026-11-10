@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { db } from "~/db";
 import { calculateProgress } from "~/services/progressService";
@@ -6,7 +6,12 @@ import {
   CourseStatus,
   courseRatings,
   courses,
+  coupons,
   enrollments,
+  LessonProgressStatus,
+  lessonProgress,
+  lessons,
+  modules,
   purchases,
 } from "~/db/schema";
 
@@ -427,4 +432,147 @@ export function getCourseSummaries(
       averageRating: ratings.get(course.courseId)?.average ?? null,
       ratingCount: ratings.get(course.courseId)?.count ?? 0,
     }));
+}
+
+// ─── Lesson funnel ───
+// For one course, the share of its enrolled students who completed each
+// lesson, in course order (module position, then lesson position). Only
+// `completed` progress counts. All time; ignores the date range.
+
+export type FunnelLesson = {
+  lessonId: number;
+  title: string;
+  moduleId: number;
+  moduleTitle: string;
+  /** Enrolled students whose progress on this lesson is `completed`. */
+  completedCount: number;
+  /** completedCount ÷ enrolled students, 0–1. 0 when nobody is enrolled. */
+  completionRate: number;
+};
+
+/** The lesson with the largest fall from the lesson before it. */
+export type BiggestDrop = {
+  lessonId: number;
+  title: string;
+  /** Fall in completion rate from the preceding lesson, 0–1 (points ÷ 100). */
+  drop: number;
+};
+
+export type LessonFunnel = {
+  enrolledCount: number;
+  lessons: FunnelLesson[];
+  /** Null when no lesson falls below the one before it. */
+  biggestDrop: BiggestDrop | null;
+};
+
+function findBiggestDrop(funnel: FunnelLesson[]): BiggestDrop | null {
+  let biggest: BiggestDrop | null = null;
+  for (let i = 1; i < funnel.length; i++) {
+    const drop = funnel[i - 1].completionRate - funnel[i].completionRate;
+    if (drop > 0 && (biggest === null || drop > biggest.drop)) {
+      biggest = { lessonId: funnel[i].lessonId, title: funnel[i].title, drop };
+    }
+  }
+  return biggest;
+}
+
+export function getLessonFunnel(courseId: number): LessonFunnel {
+  const courseLessons = db
+    .select({
+      lessonId: lessons.id,
+      title: lessons.title,
+      moduleId: modules.id,
+      moduleTitle: modules.title,
+    })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .where(eq(modules.courseId, courseId))
+    .orderBy(modules.position, lessons.position)
+    .all();
+
+  const enrolledCount =
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(enrollments)
+      .where(eq(enrollments.courseId, courseId))
+      .get()?.count ?? 0;
+
+  // Completions per lesson, counting only students enrolled in this course.
+  const completedRows = db
+    .select({
+      lessonId: lessonProgress.lessonId,
+      count: sql<number>`count(distinct ${lessonProgress.userId})`,
+    })
+    .from(lessonProgress)
+    .innerJoin(lessons, eq(lessonProgress.lessonId, lessons.id))
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .innerJoin(
+      enrollments,
+      and(
+        eq(enrollments.userId, lessonProgress.userId),
+        eq(enrollments.courseId, modules.courseId)
+      )
+    )
+    .where(
+      and(
+        eq(modules.courseId, courseId),
+        eq(lessonProgress.status, LessonProgressStatus.Completed)
+      )
+    )
+    .groupBy(lessonProgress.lessonId)
+    .all();
+  const completed = new Map(completedRows.map((r) => [r.lessonId, r.count]));
+
+  const funnel = courseLessons.map((lesson) => {
+    const completedCount = completed.get(lesson.lessonId) ?? 0;
+    return {
+      ...lesson,
+      completedCount,
+      completionRate: enrolledCount === 0 ? 0 : completedCount / enrolledCount,
+    };
+  });
+
+  return { enrolledCount, lessons: funnel, biggestDrop: findBiggestDrop(funnel) };
+}
+
+// ─── Revenue by country ───
+// One course's purchases grouped by their stored country code, all time. No
+// attempt to reconstruct PPP discounts: the tier isn't stored.
+
+export type CountryRevenue = {
+  /** ISO country code as stored; null for purchases with no country. */
+  country: string | null;
+  /** Gross amount paid, in cents. */
+  revenue: number;
+  purchaseCount: number;
+};
+
+/** Highest revenue first. */
+export function getRevenueByCountry(courseId: number): CountryRevenue[] {
+  return db
+    .select({
+      country: purchases.country,
+      revenue: sql<number>`sum(${purchases.amountPaid})`,
+      purchaseCount: sql<number>`count(*)`,
+    })
+    .from(purchases)
+    .where(eq(purchases.courseId, courseId))
+    .groupBy(purchases.country)
+    .orderBy(sql`sum(${purchases.amountPaid}) desc`, purchases.country)
+    .all();
+}
+
+// ─── Unredeemed seats ───
+
+/** Coupons from this course's team purchases that nobody has redeemed. */
+export function getUnredeemedSeatCount(courseId: number): number {
+  return (
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(coupons)
+      .where(
+        and(eq(coupons.courseId, courseId), isNull(coupons.redeemedByUserId))
+      )
+      .get()?.count ?? 0
+  );
 }
