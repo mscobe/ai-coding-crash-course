@@ -1,7 +1,9 @@
 import { Link, isRouteErrorResponse } from "react-router";
 import type { Route } from "./+types/instructor.analytics";
 import { requireInstructor } from "~/lib/access.server";
+import { EnrollmentsChart } from "~/components/enrollments-chart";
 import {
+  getEnrollmentsOverTime,
   getInstructorOverview,
   parseAnalyticsRange,
   type AnalyticsRange,
@@ -47,13 +49,17 @@ export async function loader({ request }: Route.LoaderArgs) {
     new URL(request.url).searchParams.get("range")
   );
 
-  return { range, overview: getInstructorOverview(userId, range) };
+  return {
+    range,
+    overview: getInstructorOverview(userId, range),
+    enrollmentsOverTime: getEnrollmentsOverTime(userId, range),
+  };
 }
 
 export default function InstructorAnalytics({
   loaderData,
 }: Route.ComponentProps) {
-  const { range, overview } = loaderData;
+  const { range, overview, enrollmentsOverTime } = loaderData;
   const isEmpty =
     overview.revenue.current === 0 && overview.newEnrollments.current === 0;
 
@@ -116,6 +122,10 @@ export default function InstructorAnalytics({
             </span>
           }
         />
+      </div>
+
+      <div className="mt-6">
+        <EnrollmentsChart series={enrollmentsOverTime} />
       </div>
 
       {isEmpty && (
