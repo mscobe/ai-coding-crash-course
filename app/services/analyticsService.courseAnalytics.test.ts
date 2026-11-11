@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
+import { eq } from "drizzle-orm";
 
 let testDb: ReturnType<typeof createTestDb>;
 let base: ReturnType<typeof seedBaseData>;
@@ -13,6 +14,7 @@ vi.mock("~/db", () => ({
 
 // Import after mock so the module picks up our test db
 import {
+  getAnalyticsCourse,
   getLessonFunnel,
   getRevenueByCountry,
   getUnredeemedSeatCount,
@@ -68,6 +70,36 @@ function setProgress(
 beforeEach(() => {
   testDb = createTestDb();
   base = seedBaseData(testDb);
+});
+
+describe("getAnalyticsCourse", () => {
+  function setStatus(status: schema.CourseStatus) {
+    testDb
+      .update(schema.courses)
+      .set({ status })
+      .where(eq(schema.courses.id, base.course.id))
+      .run();
+  }
+
+  it("excludes draft courses", () => {
+    setStatus(schema.CourseStatus.Draft);
+
+    expect(getAnalyticsCourse(base.course.id)).toBeNull();
+  });
+
+  it("includes published and archived courses", () => {
+    expect(getAnalyticsCourse(base.course.id)).toEqual({
+      id: base.course.id,
+      title: base.course.title,
+    });
+
+    setStatus(schema.CourseStatus.Archived);
+    expect(getAnalyticsCourse(base.course.id)?.id).toBe(base.course.id);
+  });
+
+  it("returns null for a course that doesn't exist", () => {
+    expect(getAnalyticsCourse(99_999)).toBeNull();
+  });
 });
 
 describe("getLessonFunnel", () => {

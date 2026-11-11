@@ -21,9 +21,9 @@ import {
 
 // ─── Ranges ───
 
-export const ANALYTICS_RANGES = ["30d", "90d", "12m", "all"] as const;
+const ANALYTICS_RANGES = ["30d", "90d", "12m", "all"] as const;
 export type AnalyticsRange = (typeof ANALYTICS_RANGES)[number];
-export const DEFAULT_ANALYTICS_RANGE: AnalyticsRange = "30d";
+const DEFAULT_ANALYTICS_RANGE: AnalyticsRange = "30d";
 
 /** Parses a `?range=` value; anything unrecognised falls back to 30d. */
 export function parseAnalyticsRange(value: string | null): AnalyticsRange {
@@ -90,6 +90,27 @@ function withinWindow(column: SQLiteColumn, window: Window) {
   );
 }
 
+/**
+ * Where-clause for rows (purchases, enrollments, ratings…) that belong to the
+ * instructor's analytics courses, optionally limited to `window` on
+ * `dateColumn`. Pass both of the last two or neither.
+ */
+function inAnalyticsScope(
+  instructorId: number,
+  courseIdColumn: SQLiteColumn,
+  dateColumn?: SQLiteColumn,
+  window?: Window
+) {
+  const instructorCourses = db
+    .select({ id: courses.id })
+    .from(courses)
+    .where(instructorCourseFilter(instructorId));
+  return and(
+    inArray(courseIdColumn, instructorCourses),
+    dateColumn && window ? withinWindow(dateColumn, window) : undefined
+  );
+}
+
 /** Current and previous-period values of one metric. */
 export type PeriodComparison = { current: number; previous: number | null };
 
@@ -128,23 +149,38 @@ const RANGE_GRANULARITY: Record<AnalyticsRange, TimeGranularity> = {
   all: "month",
 };
 
+/**
+ * Per granularity: where the bucket holding a UTC-midnight `day` starts, and
+ * where the bucket after `start` starts.
+ */
+const BUCKETS: Record<
+  TimeGranularity,
+  { start: (day: Date) => Date; next: (start: Date) => Date }
+> = {
+  day: {
+    start: (day) => day,
+    next: (start) => new Date(start.getTime() + DAY_MS),
+  },
+  week: {
+    // ISO weeks start on Monday.
+    start: (day) =>
+      new Date(day.getTime() - ((day.getUTCDay() + 6) % 7) * DAY_MS),
+    next: (start) => new Date(start.getTime() + 7 * DAY_MS),
+  },
+  month: {
+    start: (day) =>
+      new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), 1)),
+    next: (start) =>
+      new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1)),
+  },
+};
+
 /** Start (UTC midnight) of the bucket containing `date`. */
 function bucketStart(date: Date, granularity: TimeGranularity): Date {
   const day = new Date(
     Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
   );
-  if (granularity === "day") return day;
-  if (granularity === "week") {
-    const daysSinceMonday = (day.getUTCDay() + 6) % 7;
-    return new Date(day.getTime() - daysSinceMonday * DAY_MS);
-  }
-  return new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), 1));
-}
-
-function nextBucket(start: Date, granularity: TimeGranularity): Date {
-  if (granularity === "day") return new Date(start.getTime() + DAY_MS);
-  if (granularity === "week") return new Date(start.getTime() + 7 * DAY_MS);
-  return new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1));
+  return BUCKETS[granularity].start(day);
 }
 
 const toDateKey = (date: Date) => date.toISOString().slice(0, 10);
@@ -160,11 +196,12 @@ export function getEnrollmentsOverTime(
   const rows = db
     .select({ enrolledAt: enrollments.enrolledAt })
     .from(enrollments)
-    .innerJoin(courses, eq(enrollments.courseId, courses.id))
     .where(
-      and(
-        instructorCourseFilter(instructorId),
-        withinWindow(enrollments.enrolledAt, current)
+      inAnalyticsScope(
+        instructorId,
+        enrollments.courseId,
+        enrollments.enrolledAt,
+        current
       )
     )
     .all();
@@ -186,7 +223,7 @@ export function getEnrollmentsOverTime(
   for (
     let start = bucketStart(firstDay, granularity);
     start <= now;
-    start = nextBucket(start, granularity)
+    start = BUCKETS[granularity].next(start)
   ) {
     const key = toDateKey(start);
     buckets.push({ start: key, count: counts.get(key) ?? 0 });
@@ -196,35 +233,8 @@ export function getEnrollmentsOverTime(
 
 // ─── Instructor overview ───
 
-function sumRevenue(instructorId: number, window: Window): number {
-  const result = db
-    .select({ total: sql<number>`coalesce(sum(${purchases.amountPaid}), 0)` })
-    .from(purchases)
-    .innerJoin(courses, eq(purchases.courseId, courses.id))
-    .where(
-      and(
-        instructorCourseFilter(instructorId),
-        withinWindow(purchases.createdAt, window)
-      )
-    )
-    .get();
-  return result?.total ?? 0;
-}
-
-function countEnrollments(instructorId: number, window: Window): number {
-  const result = db
-    .select({ count: sql<number>`count(*)` })
-    .from(enrollments)
-    .innerJoin(courses, eq(enrollments.courseId, courses.id))
-    .where(
-      and(
-        instructorCourseFilter(instructorId),
-        withinWindow(enrollments.enrolledAt, window)
-      )
-    )
-    .get();
-  return result?.count ?? 0;
-}
+const sumValues = (byCourse: Map<number, number>) =>
+  [...byCourse.values()].reduce((sum, value) => sum + value, 0);
 
 /** Completed ÷ total enrollments, all time. 0 when there are none. */
 function getCompletionRate(instructorId: number): number {
@@ -234,8 +244,7 @@ function getCompletionRate(instructorId: number): number {
       completed: sql<number>`count(${enrollments.completedAt})`,
     })
     .from(enrollments)
-    .innerJoin(courses, eq(enrollments.courseId, courses.id))
-    .where(instructorCourseFilter(instructorId))
+    .where(inAnalyticsScope(instructorId, enrollments.courseId))
     .get();
   if (!result || result.total === 0) return 0;
   return result.completed / result.total;
@@ -249,8 +258,7 @@ function getRatingSummary(instructorId: number) {
       count: sql<number>`count(*)`,
     })
     .from(courseRatings)
-    .innerJoin(courses, eq(courseRatings.courseId, courses.id))
-    .where(instructorCourseFilter(instructorId))
+    .where(inAnalyticsScope(instructorId, courseRatings.courseId))
     .get();
   return { average: result?.average ?? null, count: result?.count ?? 0 };
 }
@@ -273,9 +281,11 @@ export function getInstructorOverview(
 ): InstructorOverview {
   const rating = getRatingSummary(instructorId);
   return {
-    revenue: comparePeriods(range, now, (w) => sumRevenue(instructorId, w)),
+    revenue: comparePeriods(range, now, (w) =>
+      sumValues(revenueByCourse(instructorId, w))
+    ),
     newEnrollments: comparePeriods(range, now, (w) =>
-      countEnrollments(instructorId, w)
+      sumValues(enrollmentsByCourse(instructorId, w))
     ),
     completionRate: getCompletionRate(instructorId),
     averageRating: rating.average,
@@ -293,11 +303,12 @@ function revenueByCourse(instructorId: number, window: Window) {
       total: sql<number>`sum(${purchases.amountPaid})`,
     })
     .from(purchases)
-    .innerJoin(courses, eq(purchases.courseId, courses.id))
     .where(
-      and(
-        instructorCourseFilter(instructorId),
-        withinWindow(purchases.createdAt, window)
+      inAnalyticsScope(
+        instructorId,
+        purchases.courseId,
+        purchases.createdAt,
+        window
       )
     )
     .groupBy(purchases.courseId)
@@ -313,11 +324,12 @@ function enrollmentsByCourse(instructorId: number, window: Window) {
       count: sql<number>`count(*)`,
     })
     .from(enrollments)
-    .innerJoin(courses, eq(enrollments.courseId, courses.id))
     .where(
-      and(
-        instructorCourseFilter(instructorId),
-        withinWindow(enrollments.enrolledAt, window)
+      inAnalyticsScope(
+        instructorId,
+        enrollments.courseId,
+        enrollments.enrolledAt,
+        window
       )
     )
     .groupBy(enrollments.courseId)
@@ -334,8 +346,7 @@ function ratingsByCourse(instructorId: number) {
       count: sql<number>`count(*)`,
     })
     .from(courseRatings)
-    .innerJoin(courses, eq(courseRatings.courseId, courses.id))
-    .where(instructorCourseFilter(instructorId))
+    .where(inAnalyticsScope(instructorId, courseRatings.courseId))
     .groupBy(courseRatings.courseId)
     .all();
   return new Map(rows.map((r) => [r.courseId, r]));
@@ -353,8 +364,7 @@ function outcomesByCourse(instructorId: number) {
       completedAt: enrollments.completedAt,
     })
     .from(enrollments)
-    .innerJoin(courses, eq(enrollments.courseId, courses.id))
-    .where(instructorCourseFilter(instructorId))
+    .where(inAnalyticsScope(instructorId, enrollments.courseId))
     .all();
 
   const totals = new Map<
@@ -362,23 +372,28 @@ function outcomesByCourse(instructorId: number) {
     { enrolled: number; completed: number; progress: number }
   >();
   for (const row of rows) {
-    const t = totals.get(row.courseId) ?? {
+    const courseTotals = totals.get(row.courseId) ?? {
       enrolled: 0,
       completed: 0,
       progress: 0,
     };
-    t.enrolled++;
-    if (row.completedAt !== null) t.completed++;
-    t.progress += calculateProgress(row.userId, row.courseId, false, false);
-    totals.set(row.courseId, t);
+    courseTotals.enrolled++;
+    if (row.completedAt !== null) courseTotals.completed++;
+    courseTotals.progress += calculateProgress(
+      row.userId,
+      row.courseId,
+      false,
+      false
+    );
+    totals.set(row.courseId, courseTotals);
   }
 
   return new Map(
-    [...totals].map(([courseId, t]) => [
+    [...totals].map(([courseId, courseTotals]) => [
       courseId,
       {
-        completionRate: t.completed / t.enrolled,
-        averageProgress: t.progress / t.enrolled / 100,
+        completionRate: courseTotals.completed / courseTotals.enrolled,
+        averageProgress: courseTotals.progress / courseTotals.enrolled / 100,
       },
     ])
   );
@@ -432,6 +447,27 @@ export function getCourseSummaries(
       averageRating: ratings.get(course.courseId)?.average ?? null,
       ratingCount: ratings.get(course.courseId)?.count ?? 0,
     }));
+}
+
+// ─── Course analytics ───
+
+/**
+ * The course behind a per-course analytics page, or null when it doesn't
+ * exist or is a draft (drafts are out of analytics scope).
+ */
+export function getAnalyticsCourse(courseId: number) {
+  return (
+    db
+      .select({ id: courses.id, title: courses.title })
+      .from(courses)
+      .where(
+        and(
+          eq(courses.id, courseId),
+          inArray(courses.status, ANALYTICS_COURSE_STATUSES)
+        )
+      )
+      .get() ?? null
+  );
 }
 
 // ─── Lesson funnel ───

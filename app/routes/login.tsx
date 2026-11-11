@@ -3,7 +3,8 @@ import { redirect, data } from "react-router";
 import { z } from "zod";
 import type { Route } from "./+types/login";
 import { getUserByEmail, getUserById } from "~/services/userService";
-import { UserRole } from "~/db/schema";
+import type { UserRole } from "~/db/schema";
+import { homePathForRole } from "~/lib/role-home";
 import { setCurrentUserId, getCurrentUserId } from "~/lib/session";
 import { parseFormData } from "~/lib/validation";
 import { Button } from "~/components/ui/button";
@@ -26,11 +27,11 @@ export function meta() {
   ];
 }
 
-// An explicit redirect target wins; otherwise instructors land on "My Courses".
+// An explicit redirect target wins; otherwise the role's home, then the catalog.
 function resolveDestination(url: URL, role: UserRole | undefined) {
   const redirectTo = url.searchParams.get("redirectTo");
   if (redirectTo && redirectTo.startsWith("/")) return redirectTo;
-  return role === UserRole.Instructor ? "/instructor" : "/courses";
+  return homePathForRole(role) ?? "/courses";
 }
 
 export async function loader({ request, url }: Route.LoaderArgs) {

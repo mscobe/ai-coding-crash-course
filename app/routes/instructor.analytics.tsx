@@ -1,4 +1,4 @@
-import { Link, isRouteErrorResponse } from "react-router";
+import { Link } from "react-router";
 import type { Route } from "./+types/instructor.analytics";
 import { requireInstructor } from "~/lib/access.server";
 import { EnrollmentsChart } from "~/components/enrollments-chart";
@@ -11,9 +11,10 @@ import {
 } from "~/services/analyticsService";
 import { Button } from "~/components/ui/button";
 import { OverviewTiles } from "~/components/analytics-tiles";
+import { AnalyticsErrorBoundary } from "~/components/analytics-error";
 import { CourseSummaryTable } from "~/components/course-summary-table";
 import { cn } from "~/lib/utils";
-import { AlertTriangle, BarChart3 } from "lucide-react";
+import { BarChart3 } from "lucide-react";
 
 // ─── Instructor Analytics Overview ───
 // Headline numbers across the signed-in instructor's own (non-draft) courses.
@@ -135,38 +136,10 @@ function RangeSelector({ selected }: { selected: AnalyticsRange }) {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  let title = "Something went wrong";
-  let message = "An unexpected error occurred while loading your analytics.";
-
-  if (isRouteErrorResponse(error)) {
-    if (error.status === 401) {
-      title = "Sign in required";
-      message =
-        typeof error.data === "string"
-          ? error.data
-          : "Please select a user from the DevUI panel.";
-    } else if (error.status === 403) {
-      title = "Not allowed";
-      message =
-        typeof error.data === "string"
-          ? error.data
-          : "You don't have access to this page.";
-    } else {
-      title = `Error ${error.status}`;
-      message = typeof error.data === "string" ? error.data : error.statusText;
-    }
-  }
-
   return (
-    <div className="flex min-h-[50vh] items-center justify-center p-6">
-      <div className="text-center">
-        <AlertTriangle className="mx-auto mb-4 size-12 text-muted-foreground" />
-        <h1 className="mb-2 text-2xl font-bold">{title}</h1>
-        <p className="mb-6 text-muted-foreground">{message}</p>
-        <Link to="/">
-          <Button>Go Home</Button>
-        </Link>
-      </div>
-    </div>
+    <AnalyticsErrorBoundary
+      error={error}
+      fallbackMessage="An unexpected error occurred while loading your analytics."
+    />
   );
 }

@@ -4,7 +4,7 @@ import type { Route } from "./+types/api.switch-user";
 import { setCurrentUserId } from "~/lib/session";
 import { parseFormData } from "~/lib/validation";
 import { getUserById } from "~/services/userService";
-import { UserRole } from "~/db/schema";
+import { homePathForRole } from "~/lib/role-home";
 
 const switchUserSchema = z.object({
   userId: z.coerce.number().int().positive("Invalid user ID"),
@@ -20,8 +20,8 @@ export async function action({ request, url }: Route.ActionArgs) {
 
   const cookie = await setCurrentUserId(request, parsed.data.userId);
 
-  const user = getUserById(parsed.data.userId);
-  const fallback = user?.role === UserRole.Instructor ? "/instructor" : "/";
+  const fallback =
+    homePathForRole(getUserById(parsed.data.userId)?.role) ?? "/";
 
   return redirect(url.searchParams.get("redirectTo") ?? fallback, {
     headers: { "Set-Cookie": cookie },

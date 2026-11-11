@@ -12,16 +12,12 @@ import type {
 } from "~/services/analyticsService";
 import { Card, CardContent } from "~/components/ui/card";
 import { cn } from "~/lib/utils";
+import { formatCents } from "~/lib/format";
 
 // ─── Analytics headline tiles ───
 // The four headline numbers (revenue, new enrollments, completion rate,
 // average rating). Shared by the analytics overview and the KPI strip on
 // "My Courses".
-
-export const usd = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-});
 
 export function formatRating(averageRating: number | null) {
   return averageRating === null ? "—" : averageRating.toFixed(1);
@@ -33,7 +29,7 @@ export function OverviewTiles({ overview }: { overview: InstructorOverview }) {
       <StatTile
         label="Revenue"
         icon={<DollarSign className="size-4" />}
-        value={usd.format(overview.revenue.current / 100)}
+        value={formatCents(overview.revenue.current)}
         change={<Change comparison={overview.revenue} />}
       />
       <StatTile
