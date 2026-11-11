@@ -2,7 +2,8 @@ import { Link } from "react-router";
 import type { CourseSummary } from "~/services/analyticsService";
 import { CourseStatus } from "~/db/schema";
 import { Card } from "~/components/ui/card";
-import { formatRating, usd } from "~/components/analytics-tiles";
+import { formatRating } from "~/components/analytics-tiles";
+import { formatCents } from "~/lib/format";
 
 // ─── Per-course summary table ───
 // One row per published or archived course. Revenue and enrollments follow
@@ -62,7 +63,7 @@ export function CourseSummaryTable({
                     </div>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    {usd.format(course.revenue / 100)}
+                    {formatCents(course.revenue)}
                   </td>
                   <td className="px-4 py-3 text-right">
                     {course.enrollments.toLocaleString("en-US")}
